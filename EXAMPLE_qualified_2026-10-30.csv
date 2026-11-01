@@ -1,0 +1,6 @@
+symbol,date,close,breakout_level,volume_multiple,PK_volume_multiple,RSI14,ADX14,ema20,ema50,ema200,average_traded_value_crore,PK_breakout,PK_volume,PK_RSI,uptrend,RSI_rising,ADX_confirmation,Bollinger_squeeze_breakout,completed_week_confirmation,recent_EMA_crossover,confirmations,qualified,chart
+ATHERENERG,2026-10-30,1756.0,1702.0,2.21,2.07,69.82,22.75,1543.67,1490.94,1153.66,542.71,True,True,True,True,True,False,True,True,False,3,True,https://www.tradingview.com/chart/?symbol=NSE%3AATHERENERG
+NAVINFLUOR,2026-10-30,8680.0,8634.0,3.09,2.83,58.81,18.36,8263.27,8236.46,7318.03,104.02,True,True,True,True,True,False,False,True,True,2,True,https://www.tradingview.com/chart/?symbol=NSE%3ANAVINFLUOR
+ZYDUSLIFE,2026-10-30,1245.5,1210.5,2.74,2.55,70.87,10.29,1158.18,1145.97,1067.95,152.49,True,True,True,True,True,False,False,True,False,2,True,https://www.tradingview.com/chart/?symbol=NSE%3AZYDUSLIFE
+COFORGE,2026-10-30,2045.0,2008.8,2.33,2.2,66.74,18.15,1925.07,1855.29,1662.09,501.07,True,True,True,True,True,False,False,True,False,2,True,https://www.tradingview.com/chart/?symbol=NSE%3ACOFORGE
+DIVISLAB,2026-10-30,9780.0,9699.5,1.74,1.67,64.37,21.39,9344.78,9072.8,7739.26,546.27,True,True,True,True,True,False,False,True,False,2,True,https://www.tradingview.com/chart/?symbol=NSE%3ADIVISLAB
