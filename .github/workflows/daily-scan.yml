@@ -29,7 +29,7 @@ concurrency:
 jobs:
   scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 90
     env:
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -63,7 +63,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .scan-state
-          key: stock-scan-delivered-v1-${{ github.repository_id }}-${{ steps.trading-date.outputs.date }}
+          key: stock-scan-delivered-v2-${{ github.repository_id }}-${{ hashFiles('config.json', 'scanner.py', 'pk_rules.py') }}-${{ steps.trading-date.outputs.date }}
       - name: Connect Telegram or run scan
         env:
           SCAN_DATE: ${{ steps.trading-date.outputs.date }}
