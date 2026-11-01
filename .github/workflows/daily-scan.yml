@@ -1,0 +1,86 @@
+name: Daily Stock Scanner
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Choose setup-telegram for the first connection test; otherwise scan'
+        type: choice
+        options:
+          - scan
+          - setup-telegram
+        default: scan
+      scan_date:
+        description: 'Optional trading date YYYY-MM-DD. Leave blank for the latest completed weekday.'
+        type: string
+        required: false
+  schedule:
+    # GitHub cron is UTC: 12:45 = 18:15 IST; 13:45 = 19:15 IST.
+    # The second run retries if the first failed; a success cache avoids duplicate scheduled alerts.
+    - cron: '45 12,13 * * 1-5'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: daily-stock-scanner
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      MODE: ${{ inputs.mode }}
+      REQUESTED_DATE: ${{ inputs.scan_date }}
+      EVENT_NAME: ${{ github.event_name }}
+    steps:
+      - name: Download your repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install scanner libraries
+        run: |
+          python -m pip install --only-binary=:all: -r requirements.txt
+      - name: Select trading date
+        if: env.MODE != 'setup-telegram'
+        id: trading-date
+        run: |
+          python - <<'PY'
+          import os
+          from scanner import target_date
+          day = target_date(os.environ.get('REQUESTED_DATE') or None)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f'date={day}\n')
+          PY
+      - name: Restore successful-delivery marker
+        if: env.MODE != 'setup-telegram'
+        uses: actions/cache@v4
+        with:
+          path: .scan-state
+          key: stock-scan-delivered-v1-${{ github.repository_id }}-${{ steps.trading-date.outputs.date }}
+      - name: Connect Telegram or run scan
+        env:
+          SCAN_DATE: ${{ steps.trading-date.outputs.date }}
+        shell: bash
+        run: |
+          if [ "$MODE" = "setup-telegram" ]; then
+            python scanner.py --setup-telegram
+          else
+            EXTRA=()
+            if [ "$EVENT_NAME" = "workflow_dispatch" ]; then EXTRA+=(--force); fi
+            python scanner.py --date "$SCAN_DATE" "${EXTRA[@]}"
+          fi
+      - name: Save downloadable CSV results
+        if: always() && env.MODE != 'setup-telegram'
+        uses: actions/upload-artifact@v4
+        with:
+          name: stock-scan-${{ steps.trading-date.outputs.date }}-${{ github.run_number }}
+          path: output/
+          retention-days: 7
+          if-no-files-found: ignore
