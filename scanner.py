@@ -20,7 +20,6 @@ from pk_rules import PKRules
 ROOT = Path(__file__).resolve().parent
 IST = ZoneInfo('Asia/Kolkata')
 HEADERS = {'User-Agent': 'Mozilla/5.0', 'Accept': '*/*'}
-UNIVERSE_URL = 'https://www.niftyindices.com/IndexConstituent/ind_nifty500list.csv'
 
 
 def download(url, attempts=3, timeout=30):
@@ -56,6 +55,8 @@ def send_message(text, chat_id=None):
     if not chat:
         raise RuntimeError('Add the TELEGRAM_CHAT_ID repository secret')
     for start in range(0, len(text), 3500):
+        if start:
+            time.sleep(1.1)
         telegram('sendMessage', {'chat_id': chat, 'text': text[start:start+3500],
                                 'link_preview_options': {'is_disabled': True}})
 
@@ -86,31 +87,71 @@ def target_date(explicit=None):
     return day
 
 
+def parse_market_caps(blob, day, minimum_crore):
+    """NSE PR archive mcap file is in RUPEES, not crore. Filter strictly > threshold."""
+    with zipfile.ZipFile(io.BytesIO(blob)) as z:
+        name = next((n for n in z.namelist() if Path(n).name.lower() == f'mcap{day:%d%m%Y}.csv'), None)
+        if name is None:
+            raise ValueError('NSE PR archive has no market-cap file for the target date')
+        caps = pd.read_csv(io.BytesIO(z.read(name)))
+    caps.columns = caps.columns.str.strip()
+    required = {'Trade Date','Symbol','Series','Category','Market Cap(Rs.)'}
+    if not required.issubset(caps.columns):
+        raise ValueError('Unexpected NSE market-cap file columns')
+    dates = pd.to_datetime(caps['Trade Date'].astype(str).str.strip(), format='%d %b %Y', errors='coerce')
+    if dates.isna().any() or not dates.dt.date.eq(day).all():
+        raise ValueError('NSE market-cap file date does not match target date')
+    for col in ['Symbol','Series','Category']:
+        caps[col] = caps[col].fillna('').astype(str).str.strip()
+    # Listed normal-equity companies. Permitted-only, SME and other series are
+    # outside this version's explicitly defined universe.
+    caps = caps[caps.Series.eq('EQ') & caps.Category.eq('Listed')].copy()
+    if caps.empty or caps.Symbol.duplicated().any():
+        raise ValueError('Empty or duplicate listed-EQ market-cap universe')
+    rupees = pd.to_numeric(caps['Market Cap(Rs.)'].astype(str).str.replace(',','',regex=False),errors='coerce')
+    caps['market_cap_crore'] = rupees / 10_000_000
+    meta = {'universe':'NSE-listed EQ shares','market_cap_date':str(day),
+            'minimum_market_cap_crore':minimum_crore,'market_cap_rule':'strictly greater than',
+            'listed_EQ_in_report':len(caps),
+            'missing_or_invalid_market_cap':int((caps.market_cap_crore.isna() | caps.market_cap_crore.le(0)).sum()),
+            'at_or_below_threshold':int(caps.market_cap_crore.le(minimum_crore).sum())}
+    eligible = caps[caps.market_cap_crore.gt(minimum_crore)].copy()
+    if eligible.empty:
+        raise ValueError('No companies passed the market-cap universe filter; scan stopped')
+    meta['above_market_cap_threshold'] = len(eligible)
+    return eligible.set_index('Symbol'), meta
+
+
 def load_inputs(day, offline=None):
+    cfg = json.loads((ROOT/'config.json').read_text())
+    threshold = float(cfg.get('minimum_market_cap_crore',500))
+    if threshold <= 0:
+        raise ValueError('minimum_market_cap_crore must be positive')
     if offline:
         folder = Path(offline)
-        universe = pd.read_csv(folder / 'nifty500.csv')
         bhav = pd.read_csv(folder / f'nse-bhav-{day:%Y%m%d}.csv')
+        blob = (folder / f'nse-pr-{day:%Y%m%d}.zip').read_bytes()
     else:
-        universe = pd.read_csv(io.BytesIO(download(UNIVERSE_URL)))
         url = f'https://nsearchives.nseindia.com/content/cm/BhavCopy_NSE_CM_0_0_0_{day:%Y%m%d}_F_0000.csv.zip'
         try:
-            blob = download(url, attempts=4)
-            with zipfile.ZipFile(io.BytesIO(blob)) as z:
+            data = download(url,attempts=4)
+            with zipfile.ZipFile(io.BytesIO(data)) as z:
                 name = next(n for n in z.namelist() if n.lower().endswith('.csv'))
                 bhav = pd.read_csv(io.BytesIO(z.read(name)))
+            pr_url = f'https://nsearchives.nseindia.com/archives/equities/bhavcopy/pr/PR{day:%d%m%y}.zip'
+            blob = download(pr_url,attempts=4)
         except Exception:
-            raise RuntimeError(f'No usable official NSE final file for {day}. This can be a market holiday, publication delay or blocked connection. No stale-data scan was substituted. Retry later or enter the previous trading date manually.') from None
-    if not {'Symbol', 'Series'}.issubset(universe.columns):
-        raise ValueError('Unexpected Nifty constituent-file format')
+            raise RuntimeError(f'No usable official NSE final-price and market-cap files for {day}. This can be a holiday, publication delay or blocked connection. No stale-date or unfiltered-universe scan was substituted. Retry later.') from None
     required = {'TradDt','TckrSymb','SctySrs','OpnPric','HghPric','LwPric','ClsPric','TtlTradgVol'}
     if not required.issubset(bhav.columns) or not bhav.TradDt.eq(str(day)).all():
-        raise ValueError('NSE file columns or dates failed validation')
-    symbols = universe.Symbol.dropna().astype(str).drop_duplicates().tolist()
+        raise ValueError('NSE final-price file columns or dates failed validation')
+    caps,meta = parse_market_caps(blob,day,threshold)
     bhav = bhav[bhav.SctySrs.eq('EQ')].set_index('TckrSymb')
     if bhav.index.duplicated().any():
         raise ValueError('Duplicate NSE EQ rows; scan stopped')
-    return symbols, bhav
+    bhav = bhav.join(caps[['market_cap_crore']],how='left')
+    bhav.attrs['universe_metadata'] = meta
+    return caps.index.tolist(), bhav
 
 
 def get_history(symbol, offline=None):
@@ -203,7 +244,7 @@ def calculate(symbol, obj, official, day, cfg):
                   latest.close>level and vm>=cfg['volume_multiple'] and trend and
                   cash>=cfg['min_average_traded_value_crore'] and
                   confirmations>=cfg['minimum_additional_confirmations'])
-    return {'symbol':symbol,'date':str(day),'close':round(float(latest.close),2),
+    return {'symbol':symbol,'date':str(day),'market_cap_crore':round(float(official['market_cap_crore']),2),'close':round(float(latest.close),2),
             'breakout_level':round(level,2),'volume_multiple':round(vm,2),
             'PK_volume_multiple':saved.get('volume'),'RSI14':round(rsi,2),'ADX14':round(adx,2),
             'ema20':round(float(latest.ema20),2),'ema50':round(float(latest.ema50),2),
@@ -260,24 +301,26 @@ def scan(args):
     coverage=(len(rows)+short)/max(len(eligible),1)
     meta={'date':str(day),'universe':len(symbols),'eligible_EQ':len(eligible),'screened':len(rows),
           'excluded':len(issues),'coverage':round(coverage,4),'source_latest':'NSE final UDiFF bhavcopy',
-          'source_history':'Yahoo Finance adjusted OHLC','PKScreener_commit':'ab4212355e2442e7c8f5430d53fa3f56ea5af3b8',
+          'source_history':'Yahoo Finance adjusted OHLC','universe_filter':bhav.attrs['universe_metadata'],'PKScreener_commit':'ab4212355e2442e7c8f5430d53fa3f56ea5af3b8',
           'rules':cfg}
     selected=write_outputs(rows,issues,meta)
     if coverage<cfg['minimum_history_download_coverage']:
         raise RuntimeError(f'Incomplete scan: only {coverage:.0%} of eligible histories usable. Partial output saved; no normal shortlist sent. Retry later.')
-    lines=[f'NSE technical scan — {day}',f'Screened: {len(rows)} | Excluded: {len(issues)} | Qualified: {len(selected)}',
+    lines=[f'NSE technical scan — {day}',f"Universe: NSE-listed EQ shares | Market cap > Rs {cfg.get('minimum_market_cap_crore',500):g} crore",f'Eligible above cap: {len(symbols)}',f'Screened: {len(rows)} | Excluded: {len(issues)} | Qualified: {len(selected)}',
            'PKScreener-based rules; daily closing data. No AI.','']
     if selected.empty:lines.append('No stocks qualified under the configured rules.')
     else:
-        for row in selected.head(cfg['telegram_max_stocks']).to_dict('records'):
+        limit = int(cfg.get('telegram_max_stocks',0))
+        display = selected if limit <= 0 else selected.head(limit)
+        for row in display.to_dict('records'):
             flags=[]
             if row['Bollinger_squeeze_breakout']:flags.append('Bollinger squeeze')
             if row['ADX_confirmation']:flags.append('ADX confirmation')
             if row['recent_EMA_crossover']:flags.append('recent EMA cross')
             lines += [f"{row['symbol']}: Rs {row['close']:,.2f} | Breakout Rs {row['breakout_level']:,.2f}",
-                      f"Volume {row['volume_multiple']:.2f}x | RSI {row['RSI14']:.1f} | ADX {row['ADX14']:.1f}",
+                      f"Market cap Rs {row['market_cap_crore']:,.0f} crore | Volume {row['volume_multiple']:.2f}x | RSI {row['RSI14']:.1f} | ADX {row['ADX14']:.1f}",
                       'Extras: '+(', '.join(flags) if flags else 'see CSV for confirmations'),row['chart'],'']
-        if len(selected)>cfg['telegram_max_stocks']:lines.append('More matches are available in the GitHub qualified.csv artifact.')
+        if limit > 0 and len(selected)>limit:lines.append('More matches are available in the GitHub qualified.csv artifact.')
     lines+=['All matching stocks are reported daily; this version does not suppress a stock across different dates.',
             'Chart-review candidates, not automatic buy orders.']
     message='\n'.join(lines)

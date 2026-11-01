@@ -4,9 +4,11 @@
   "rsi_max": 75,
   "min_average_traded_value_crore": 10,
   "min_daily_bars": 210,
-  "minimum_history_download_coverage": 0.90,
+  "minimum_history_download_coverage": 0.9,
   "minimum_additional_confirmations": 2,
   "adx_threshold": 25,
-  "download_workers": 6,
-  "telegram_max_stocks": 25
+  "download_workers": 8,
+  "telegram_max_stocks": 0,
+  "universe": "NSE_LISTED_EQ",
+  "minimum_market_cap_crore": 500
 }
